@@ -1,41 +1,47 @@
 import torch
 from transformers import AutoTokenizer
-from GPT_model import GPT2, GPT_CONFIG_124M  # Import your model
+from GPT_model import GPT_model, GPT_CONFIG, generate_text_simple
+
+import os
+
 
 # Load tokenizer
-model_path = "saved_models/gpt2_finetuned"
-tokenizer = AutoTokenizer.from_pretrained(model_path)
+if os.path.exists("saved_models/gpt2_finetuned"):
+    tokenizer = AutoTokenizer.from_pretrained("saved_models/gpt2_finetuned")
+else:
+    print("Fine-tuned tokenizer not found. Using default GPT-2 tokenizer.")
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
 # Load trained model
-model = GPT2(GPT_CONFIG_124M)  # Initialize your custom model
-model.load_state_dict(torch.load("saved_models/gpt2_finetuned.pth"))
-model.eval()  # Set model to evaluation mode
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = GPT_model(GPT_CONFIG).to(device)
+
+if os.path.exists("saved_models/gpt2_finetuned.pth"):
+    model.load_state_dict(torch.load("saved_models/gpt2_finetuned.pth", map_location=device))
+    print("Loaded fine-tuned model.")
+else:
+    print("Warning: No trained model found. Running with randomly initialized weights.")
+
+
+model.eval()
 
 # Function for text generation
 def generate_text(prompt, max_tokens=50, temperature=0.7, top_k=10, top_p=0.95):
-    #inputs = tokenizer(prompt, return_tensors="pt").input_ids
-
     inputs = tokenizer(
         prompt,
         return_tensors="pt",
-        truncation=True,  # Force truncation
-        max_length=GPT_CONFIG_124M["context_length"]  #  Match model's context length
-    ).input_ids
-
+        truncation=True,
+        max_length=GPT_CONFIG["context_length"]
+    ).input_ids.to(device) 
 
     with torch.no_grad():
-        output = model.generate(
-            inputs,
-            max_length=inputs.shape[1] + max_tokens,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            do_sample=True
+        output = generate_text_simple(  
+            model, inputs, max_tokens, GPT_CONFIG["context_length"]
         )
 
-    return tokenizer.decode(output[0], skip_special_tokens=True)
+    return tokenizer.decode(output.squeeze(0).tolist(), skip_special_tokens=True)  
 
-# Example usage
+
 if __name__ == "__main__":
     user_prompt = input("Enter a prompt: ")
     generated_text = generate_text(user_prompt)
