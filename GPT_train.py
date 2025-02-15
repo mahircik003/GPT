@@ -7,9 +7,9 @@ from transformers import (
 )
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-from GPT_model import GPT2, GPT_CONFIG
+from GPT_model import GPT_model, GPT_CONFIG
 
-model = GPT2(GPT_CONFIG).to(device)
+model = GPT_model(GPT_CONFIG).to(device)
 tokenizer = AutoTokenizer.from_pretrained("gpt2")
 tokenizer.pad_token = tokenizer.eos_token
 
@@ -96,7 +96,7 @@ trainer = Trainer(
 
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
-max_steps = 5000 
+max_steps = 40000
 
 validate_every = 500 
 best_val_loss = float('inf')
