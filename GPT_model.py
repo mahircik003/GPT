@@ -7,8 +7,10 @@ import torch
 import torch.nn as nn
 import math
 
+TEMP = 1.5
 
-GPT_CONFIG_124M = {
+
+GPT_CONFIG = {
     "vocab_size": 50257,    # Vocabulary size
     "context_length": 64, # Context length     1024
     "emb_dim": 512,         # Embedding dimension         768
@@ -20,7 +22,7 @@ GPT_CONFIG_124M = {
 
 
 
-# 1. Embedding Layer
+# Embedding Layer
 class Embedding(nn.Module):
     def __init__(self, vocab_size, embed_size):
         super().__init__()
@@ -32,9 +34,9 @@ class Embedding(nn.Module):
         return self.embed(x)
 
 
-# 2. Positional Encoding
+# Positional Encoding
 class PositionalEncoding(nn.Module):
-    def __init__(self, embed_size, max_seq_length=512):
+    def __init__(self, embed_size, max_seq_length=32):
         super().__init__()
         # Initialize a tensor to hold the positional encodings
         pe = torch.zeros(max_seq_length, embed_size)
@@ -49,14 +51,13 @@ class PositionalEncoding(nn.Module):
         pe[:, 0::2] = torch.sin(position * div_term)  # Sine for even indices
         pe[:, 1::2] = torch.cos(position * div_term)  # Cosine for odd indices
         
-        # Register the positional encodings as a buffer (not a model parameter)
         self.register_buffer('pe', pe.unsqueeze(0))  # Shape: (1, max_seq_length, embed_size)
 
     def forward(self, x):
         # Add the positional encodings to the input embeddings
         return x + self.pe[:, :x.size(1)]
 
-# A. Multi-Head Attention
+# Multi-Head Attention
 class MultiHeadAttention(nn.Module):
     def __init__(self, embed_size, num_heads, qkv_bias=False):
         super().__init__()
@@ -86,7 +87,7 @@ class MultiHeadAttention(nn.Module):
         return self.out(out)
 
 
-# 5. Feed-Forward Network
+# Feed-Forward Network
 class FeedForward(nn.Module):
     def __init__(self, embed_size, ff_hidden_size):
         super().__init__()
@@ -102,7 +103,7 @@ class FeedForward(nn.Module):
         return self.fc2(self.gelu(self.fc1(x)))
 
 
-# 6. Transformer Block
+# Transformer Block
 class TransformerBlock(nn.Module):
     def __init__(self, embed_size, num_heads, ff_hidden_size, dropout=0.1, qkv_bias=False):
         super().__init__()
@@ -125,119 +126,75 @@ class TransformerBlock(nn.Module):
         return ff_output
 
 
-# 7. GPT-2 Model
-class GPT2(nn.Module):
+# GPT Model
+import torch.nn.functional as F
+
+class GPT_model(nn.Module):
     def __init__(self, config):
         super().__init__()
-        # Initialize the embedding layer to convert token IDs to embeddings
         self.embedding = Embedding(config["vocab_size"], config["emb_dim"])
-        
-        # Initialize positional encoding to add positional information to embeddings
         self.positional_encoding = PositionalEncoding(config["emb_dim"], config["context_length"])
-        
-        # Create a list of transformer blocks
         self.transformer_blocks = nn.ModuleList([
-            # Each transformer block consists of multi-head attention and feed-forward layers
             TransformerBlock(config["emb_dim"], config["n_heads"], config["emb_dim"] * 4, config["drop_rate"], config["qkv_bias"])
-            for _ in range(config["n_layers"])  # Repeat for the number of layers specified in the config
+            for _ in range(config["n_layers"])
         ])
-        
-        # Final linear layer to project the output back to the vocabulary size for logits
         self.fc_out = nn.Linear(config["emb_dim"], config["vocab_size"])
-        
-        # Dropout layer for regularization
         self.dropout = nn.Dropout(config["drop_rate"])
 
-    def forward(self, x, mask=None):
-        # Step 1: Convert input token IDs to embeddings and add positional encodings
-        x = self.dropout(self.positional_encoding(self.embedding(x)))
-        
-        # Step 2: Pass the embeddings through each transformer block
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        x = self.dropout(self.positional_encoding(self.embedding(input_ids)))
+
+        if attention_mask is not None:
+            attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+            attention_mask = attention_mask.to(dtype=torch.float32)
+            attention_mask = (1.0 - attention_mask) * -10000.0
+
         for block in self.transformer_blocks:
-            x = block(x, mask)  # Apply the transformer block with optional masking
-        
-        # Step 3: Project the final output to the vocabulary size
-        return self.fc_out(x)  # Shape: (batch_size, seq_length, vocab_size)
+            x = block(x, attention_mask)
 
-# Test GPT-2 Model
-# Create an instance of the GPT-2 model using the configuration values
-model = GPT2(GPT_CONFIG_124M)
+        logits = self.fc_out(x)
 
-# Generate random input token IDs with shape (batch_size, seq_length)
-input_ids = torch.randint(0, GPT_CONFIG_124M["vocab_size"], (2, 64))
+        loss = None
+        if labels is not None:
+            # Use a default pad token ID of -100 if none is specified
+            pad_token_id = -100 
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=pad_token_id)
 
-# Apply the model to the input token IDs
+        return {"loss": loss, "logits": logits} if loss is not None else logits
+
+
+model = GPT_model(GPT_CONFIG)
+
+
+input_ids = torch.randint(0, GPT_CONFIG["vocab_size"], (2, 64))
+
 output = model(input_ids)
 
-# Print the shape of the output from the model
-#print(f"GPT-2 Model output shape: {output}")
 
-# Assert that the output shape matches the expected shape
-assert output.shape == (2, 64, GPT_CONFIG_124M["vocab_size"]), "GPT-2 Model shape mismatch"
+assert output.shape == (2, 64, GPT_CONFIG["vocab_size"]), "GPT-2 Model shape mismatch"
 
 def generate_text_simple(model, idx, max_new_tokens, context_size):
 
-    # eos_token_id = tokenizer.eos_token_id  # GPT-2 uses <|endoftext|> as EOS
-    # if eos_token_id is None:
-    #     eos_token_id = 50256  # Manually set GPT-2's default EOS token
-
-
-    # Loop to generate the specified number of new tokens
-
     for _ in range(max_new_tokens):
-    #while(True):
-        # Prepare the context
-        # Crop the current context to the last 'context_size' tokens
+        idx_cond = idx[:, -context_size:]
 
-        idx_cond = idx[:, -context_size:]  # Shape: (batch, context_size)
-
-        # Get model predictions
         with torch.no_grad():  # Disable gradient calculation for inference
-            logits = model(idx_cond)  # Shape: (batch, n_tokens, vocab_size)
+            logits = model(idx_cond) 
 
-        # Focus on the last time step's predictions
-        logits = logits[:, -1, :]  # Shape: (batch, vocab_size)
+
+
+        
+        logits = logits[:, -1, :] 
+        temperature = TEMP
+        logits = logits / temperature    # scaling by temperature
 
         # Convert logits to probabilities using softmax
-        probas = torch.softmax(logits, dim=-1)  # Shape: (batch, vocab_size)
+        probas = torch.softmax(logits, dim=-1) 
 
-        # Get the index of the token with the highest probability
-        idx_next = torch.argmax(probas, dim=-1, keepdim=True)  # Shape: (batch, 1)
 
-        # **Stopping Condition: If EOS token is generated, stop immediately**
-        # if idx_next.item() == eos_token_id:
-        #     break
+        idx_next = torch.multinomial(probas, num_samples=1)  # generates a sample a picks from it (instead of deterministic result)
 
-        # Append the predicted token index to the sequence
-        idx = torch.cat((idx, idx_next), dim=1)  # Shape: (batch, n_tokens + 1)
 
-    return idx  # Return the updated sequence of token indices
+        idx = torch.cat((idx, idx_next), dim=1) 
 
-# Initial context for text generation
-start_context = "I want to "
-
-# Step 1: Encode the initial context into token indices
-encoded = tokenizer.encode(start_context)
-print("Encoded:", encoded)
-
-# Convert the encoded list into a tensor and add a batch dimension
-encoded_tensor = torch.tensor(encoded).unsqueeze(0)  # Shape: (1, n_tokens)
-
-# Set the model to evaluation mode to disable dropout -- dropout has to be disabled during performance
-model.eval()
-
-# Step 3: Generate new tokens based on the initial context
-out = generate_text_simple(
-    model=model,
-    idx=encoded_tensor, 
-    max_new_tokens=50, 
-    context_size=GPT_CONFIG_124M["context_length"]
-)
-
-# Step 4: Print the output tensor and its length
-print("Output:", out)
-print("Output length:", len(out[0]))
-
-# Step 5: Decode the generated token indices back into text
-decoded_text = tokenizer.decode(out.squeeze(0).tolist())
-print("Decoded text:", decoded_text)
+    return idx 
